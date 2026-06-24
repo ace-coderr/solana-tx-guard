@@ -3,8 +3,10 @@ import {
   PublicKey,
   SystemProgram,
   Transaction,
+  TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
+  AddressLookupTableAccount,
 } from "@solana/web3.js";
 import {
   createSetAuthorityInstruction,
@@ -19,16 +21,21 @@ const attackerProgram = Keypair.generate().publicKey;
 const tokenAccount = Keypair.generate().publicKey;
 const newOwner = Keypair.generate().publicKey;
 const delegate = Keypair.generate().publicKey;
+const nonceAccount = Keypair.generate().publicKey;
 const fakeBlockhash = Keypair.generate().publicKey.toBase58();
 
-function v0(instructions: any[]): string {
+const BPF_UPGRADEABLE = new PublicKey(
+  "BPFLoaderUpgradeab1e11111111111111111111111",
+);
+const MEMO = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
+
+function v0(instructions: any[], luts: AddressLookupTableAccount[] = []): string {
   const msg = new TransactionMessage({
     payerKey: payer,
     recentBlockhash: fakeBlockhash,
     instructions,
-  }).compileToV0Message();
-  const tx = new VersionedTransaction(msg);
-  return Buffer.from(tx.serialize()).toString("base64");
+  }).compileToV0Message(luts);
+  return Buffer.from(new VersionedTransaction(msg).serialize()).toString("base64");
 }
 
 function legacy(instructions: any[]): string {
@@ -40,6 +47,51 @@ function legacy(instructions: any[]): string {
     .serialize({ requireAllSignatures: false, verifySignatures: false })
     .toString("base64");
 }
+
+// --- helpers for the new fixtures ---
+
+const setAuthorityOwner = () =>
+  createSetAuthorityInstruction(
+    tokenAccount,
+    payer,
+    AuthorityType.AccountOwner,
+    newOwner,
+    [],
+    TOKEN_PROGRAM_ID,
+  );
+
+const advanceNonce = () =>
+  SystemProgram.nonceAdvance({ noncePubkey: nonceAccount, authorizedPubkey: payer });
+
+const programSetAuthority = () =>
+  new TransactionInstruction({
+    programId: BPF_UPGRADEABLE,
+    keys: [
+      { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: true },
+      { pubkey: payer, isSigner: true, isWritable: false },
+      { pubkey: Keypair.generate().publicKey, isSigner: false, isWritable: false },
+    ],
+    data: Buffer.from(Uint8Array.of(4, 0, 0, 0)), // SetAuthority
+  });
+
+// account that will be hidden inside an address lookup table
+const hiddenAccount = Keypair.generate().publicKey;
+const lut = new AddressLookupTableAccount({
+  key: Keypair.generate().publicKey,
+  state: {
+    deactivationSlot: 2n ** 64n - 1n,
+    lastExtendedSlot: 0,
+    lastExtendedSlotStartIndex: 0,
+    authority: payer,
+    addresses: [hiddenAccount],
+  },
+});
+const memoReferencingHidden = () =>
+  new TransactionInstruction({
+    programId: MEMO,
+    keys: [{ pubkey: hiddenAccount, isSigner: false, isWritable: false }],
+    data: Buffer.from("hi"),
+  });
 
 export const FIXTURES: Record<
   string,
@@ -53,40 +105,46 @@ export const FIXTURES: Record<
   },
   owner_reassignment_drainer: {
     b64: v0([
-      // looks like a normal interaction...
       SystemProgram.transfer({ fromPubkey: payer, toPubkey: recipient, lamports: 1000 }),
-      // ...but silently hands the payer's account to an attacker program.
       SystemProgram.assign({ accountPubkey: payer, programId: attackerProgram }),
     ]),
     expect: "block",
     mustHave: "OWNER_REASSIGNMENT",
   },
   token_owner_transfer: {
-    b64: legacy([
-      createSetAuthorityInstruction(
-        tokenAccount,
-        payer,
-        AuthorityType.AccountOwner,
-        newOwner,
-        [],
-        TOKEN_PROGRAM_ID,
-      ),
-    ]),
+    b64: legacy([setAuthorityOwner()]),
     expect: "block",
     mustHave: "TOKEN_ACCOUNT_OWNER_TRANSFER",
   },
   unlimited_delegate: {
     b64: v0([
-      createApproveInstruction(
-        tokenAccount,
-        delegate,
-        payer,
-        18446744073709551615n,
-        [],
-        TOKEN_PROGRAM_ID,
-      ),
+      createApproveInstruction(tokenAccount, delegate, payer, 18446744073709551615n, [], TOKEN_PROGRAM_ID),
     ]),
     expect: "warn",
     mustHave: "DELEGATE_APPROVE",
+  },
+  durable_nonce_only: {
+    b64: v0([
+      advanceNonce(),
+      SystemProgram.transfer({ fromPubkey: payer, toPubkey: recipient, lamports: 1000 }),
+    ]),
+    expect: "warn",
+    mustHave: "DURABLE_NONCE",
+  },
+  durable_nonce_combo: {
+    // pre-signed, replayable, AND changes ownership -> the acute pattern
+    b64: legacy([advanceNonce(), setAuthorityOwner()]),
+    expect: "block",
+    mustHave: "DURABLE_NONCE",
+  },
+  program_upgrade_authority_change: {
+    b64: v0([programSetAuthority()]),
+    expect: "block",
+    mustHave: "PROGRAM_UPGRADE_AUTHORITY_CHANGE",
+  },
+  alt_obscured_accounts: {
+    b64: v0([memoReferencingHidden()], [lut]),
+    expect: "warn",
+    mustHave: "ALT_OBSCURED_ACCOUNTS",
   },
 };

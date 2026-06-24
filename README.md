@@ -53,7 +53,7 @@ It is **not** a program audit, and it does not duplicate one — see
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/solana-tx-guard
+git clone https://github.com/ace-coderr/solana-tx-guard
 cd solana-tx-guard
 ./install.sh            # installs the skill to ~/.claude/skills/
 
@@ -112,8 +112,18 @@ cd analyzer && npm test
 ```
 
 Fixtures construct real benign and attack transactions in-memory and assert the
-verdict (benign → allow; owner-reassignment and token-owner-transfer → block;
-unlimited delegate → warn).
+verdict across the full engine surface (8 cases):
+
+| fixture | verdict | exercises |
+| --- | --- | --- |
+| benign transfer | allow | clean path |
+| owner reassignment | block | `OWNER_REASSIGNMENT` |
+| token owner transfer | block | `TOKEN_ACCOUNT_OWNER_TRANSFER` |
+| unlimited delegate | warn | `DELEGATE_APPROVE` |
+| durable nonce (alone) | warn | `DURABLE_NONCE` (medium) |
+| durable nonce + authority change | block | `DURABLE_NONCE` escalation |
+| program upgrade authority change | block | `PROGRAM_UPGRADE_AUTHORITY_CHANGE` |
+| ALT-obscured accounts | warn | `ALT_OBSCURED_ACCOUNTS` |
 
 ## Installation options
 
@@ -142,3 +152,7 @@ unlimited delegate → warn).
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+Maintained by [ace-coderr](https://github.com/ace-coderr) · built for the [Solana AI Kit](https://github.com/solanabr/solana-ai-kit).
