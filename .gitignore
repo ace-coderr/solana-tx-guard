@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.*
+analyzer/node_modules/
+analyzer/dist/
